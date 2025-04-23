@@ -11,6 +11,10 @@ async function deploy() {
   const factory = new ethers.ContractFactory(abi, bytecode, signer);
   const contract = await factory.deploy();
   await contract.deployed();
+  fs.writeFileSync(
+    path.resolve(__dirname, "../frontend/src/contracts/ContractAddress.json"),
+    JSON.stringify({ address: contract.address }, null, 2)
+  );
   console.log("Contract deployed to:", contract.address);
 }
 

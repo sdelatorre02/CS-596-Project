@@ -22,6 +22,8 @@ contract BlockchainLottery {
     Player[] public players;
     bool public lotteryOpen = true;
 
+    address[] public winnerHistory;
+
     event LotteryJoined(address indexed player, uint256 guess);
     event WinnerChosen(address indexed winner, uint256 closestGuess);
 
@@ -62,6 +64,7 @@ contract BlockchainLottery {
         Player memory winner = players[winningIndex];
 
         lotteryOpen = false;
+        winnerHistory.push(winner.addr);
         payable(winner.addr).transfer(address(this).balance);
 
         emit WinnerChosen(winner.addr, winner.guess);
@@ -74,6 +77,7 @@ contract BlockchainLottery {
     }
 
     function getPlayerAddresses() external view returns (address[] memory) {
+        require(!lotteryOpen, "Lottery is still open. You cannot view player addresses yet.");
         address[] memory addresses = new address[](players.length);
         for (uint256 i = 0; i < players.length; i++) {
             addresses[i] = players[i].addr;
@@ -82,10 +86,19 @@ contract BlockchainLottery {
     }
 
     function getPlayerGuesses() external view returns (uint256[] memory) {
+        require(!lotteryOpen, "Lottery is still open. You cannot view player guesses yet.");
         uint256[] memory guesses = new uint256[](players.length);
         for (uint256 i = 0; i < players.length; i++) {
             guesses[i] = players[i].guess;
         }
         return guesses;
+    }
+
+    function getWinnerHistory() external view returns (address[] memory){
+        return winnerHistory;
+    }
+
+    function getBalance() public view returns (uint256){
+        return address(this).balance;
     }
 }

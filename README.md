@@ -84,10 +84,11 @@ Open your browser to:
     - Reset mechanism.
     - Modifier-based access control (onlyByOwner, lotteryIsOpen).
     - Guard clauses to prevent early or duplicate joins.
+- [ ] Only allow one ticket per player, so players don't have multiple wallets (contract ACL or hashed information submitted in a purchase function)
 - [ ] Use [VRF](https://docs.chain.link/vrf) to do proper randomization
 - [ ] Make the max players configurable by either...
     - allow unlimited players but lottery stops at a certain date
     - contract owner can set the stoppage
-- [ ] Build the frontend
+- [x] Build the frontend
     - add basic functionality with vite, ganache, and node.js
     - clean up the code and make sure it's good

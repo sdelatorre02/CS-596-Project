@@ -28,5 +28,8 @@ const abi = contract.abi;
 const bytecode = contract.evm.bytecode.object;
 
 fs.writeFileSync(path.resolve(__dirname, "../frontend/src/contracts/LotteryABI.json"), JSON.stringify(abi, null, 2));
-fs.writeFileSync(path.resolve(__dirname, "../frontend/src/contracts/LotteryBytecode.json"), JSON.stringify(bytecode));
+fs.writeFileSync(
+  path.resolve(__dirname, "../frontend/src/contracts/LotteryBytecode.json"),
+  bytecode
+);
 console.log("✅ ABI and Bytecode files generated successfully.");

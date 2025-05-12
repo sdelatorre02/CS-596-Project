@@ -1,105 +1,174 @@
+// server.js
 const express = require("express");
+const cors    = require("cors");
 const { ethers } = require("ethers");
-const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
 
-const app = express();
-const PORT = 4000;
+async function main() {
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
 
-app.use(cors());
-app.use(express.json());
+  // ─── connect to Ganache ─────────────────────────────────────────────────────
+  const provider = new ethers.providers.JsonRpcProvider("http://127.0.0.1:8545");
+  const accounts = await provider.listAccounts();
 
-const provider = new ethers.providers.JsonRpcProvider("http://127.0.0.1:8545");
+  // ─── constants ───────────────────────────────────────────────────────────────
+  const ENTRY_FEE = ethers.utils.parseEther("0.5");           // 0.5 ETH
+  const GAS_FEE   = ethers.utils.parseUnits("1.4", "gwei");   // 1.4 Gwei
 
-const abi = require("./frontend/src/contracts/LotteryABI.json");
-const contractMeta = require("./frontend/src/contracts/ContractAddress.json");
-const contract = new ethers.Contract(contractMeta.address, abi, provider);
+  // ─── in‐memory state ─────────────────────────────────────────────────────────
+  let balances = {};    // address → BigNumber (wei)
+  let guesses  = [];    // { address, guess: number }
+  let pool     = ethers.BigNumber.from(0);
+  let closed   = false;
+  let round    = 1;
+  let eligible = [...accounts];   // who may play this round
 
-// GET /accounts
-app.get("/accounts", async (req, res) => {
-  try {
-    const accounts = await provider.listAccounts();
-    const result = [];
-    for (const address of accounts) {
-      const balance = await provider.getBalance(address);
-      result.push({ address, balance: ethers.utils.formatEther(balance) });
+  // init each account to 5 ETH
+  for (const a of accounts) {
+    balances[a] = ethers.utils.parseEther("5.0");
+  }
+
+  // ─── routes ─────────────────────────────────────────────────────────────────
+
+  // list all accounts (for balance table)
+  app.get("/accounts", (req, res) => {
+    res.json(accounts);
+  });
+
+  // list just the eligible accounts this round
+  app.get("/eligible", (req, res) => {
+    res.json(eligible);
+  });
+
+  // get the current round
+  app.get("/round", (req, res) => {
+    res.json({ round });
+  });
+
+  // fetch all balances
+  app.get("/balances", (req, res) => {
+    const out = accounts.map(a => ({
+      address: a,
+      balance: ethers.utils.formatEther(balances[a])
+    }));
+    res.json(out);
+  });
+
+  // fetch a single balance
+  app.get("/balance", (req, res) => {
+    const { address } = req.query;
+    if (!(address in balances)) {
+      return res.status(404).json({ error: "Unknown address" });
     }
-    res.json(result);
-  } catch (err) {
-    console.error("Error fetching accounts:", err);
-    res.status(500).json({ error: "Failed to fetch accounts" });
-  }
-});
+    res.json({ balance: ethers.utils.formatEther(balances[address]) });
+  });
 
-// GET /balance?address=...
-app.get("/balance", async (req, res) => {
-  try {
-    const balance = await provider.getBalance(req.query.address);
-    res.json({ balance: ethers.utils.formatEther(balance) });
-  } catch (err) {
-    console.error("Error fetching balance:", err);
-    res.status(500).json({ error: "Failed to fetch balance" });
-  }
-});
+  // fetch all guesses
+  app.get("/guesses", (req, res) => {
+    res.json(guesses);
+  });
 
-// GET /players — returns list of { address, guess }
-app.get("/players", async (req, res) => {
-  try {
-    const addresses = await contract.getPlayerAddresses();
-    const guesses = await contract.getPlayerGuesses();
-    const players = addresses.map((addr, i) => ({ address: addr, guess: guesses[i].toString() }));
-    res.json(players);
-  } catch (err) {
-    console.error("Error fetching players:", err);
-    res.status(500).json({ error: "Failed to fetch players" });
-  }
-});
+  // submit a guess
+  app.post("/guess", (req, res) => {
+    if (closed) {
+      return res.status(400).json({ error: "Lottery is closed" });
+    }
+    const { address, guess } = req.body;
+    const n = parseInt(guess, 10);
 
-// POST /enter — { address, guess }
-app.post("/enter", async (req, res) => {
-  const { address, guess } = req.body;
-  if (!address || !guess) return res.status(400).json({ error: "Missing address or guess" });
+    if (!eligible.includes(address)) {
+      return res.status(400).json({ error: "Not eligible this round" });
+    }
+    if (!balances[address]) {
+      return res.status(400).json({ error: "Unknown address" });
+    }
+    if (!Number.isInteger(n) || n < 1 || n > 1000) {
+      return res.status(400).json({ error: "Guess must be 1–1000" });
+    }
+    if (guesses.find(g => g.address === address)) {
+      return res.status(400).json({ error: "Already guessed" });
+    }
+    // ─── new duplicate-guess check ─────────────────────────────────────────────
+    if (guesses.find(g => g.guess === n)) {
+      return res.status(400).json({ error: "That number has already been guessed" });
+    }
 
-  try {
-    const signer = provider.getSigner(address);
-    const contractWithSigner = contract.connect(signer);
+    const total = ENTRY_FEE.add(GAS_FEE);
+    if (balances[address].lt(total)) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
 
-    const tx = await contractWithSigner.joinLottery(guess, {
-      value: ethers.utils.parseUnits("10", "gwei"),
-      gasLimit: 1000000,
-    });
-    await tx.wait();
+    // deduct fee + gas from balance, add entry fee to pool
+    balances[address] = balances[address].sub(total);
+    pool = pool.add(ENTRY_FEE);
+    guesses.push({ address, guess: n });
+
     res.json({ success: true });
-  } catch (err) {
-    console.error("Error entering lottery:", err);
-    res.status(500).json({ error: "Failed to enter lottery" });
-  }
-});
+  });
 
-// GET /winner — derive winner from last player if lottery closed
-app.get("/winner", async (req, res) => {
-  try {
-    const addresses = await contract.getPlayerAddresses();
-    const guesses = await contract.getPlayerGuesses();
+  // close and pick winner
+  app.post("/close", (req, res) => {
+    if (closed) {
+      return res.status(400).json({ error: "Already closed" });
+    }
+    closed = true;
 
-    if (addresses.length < 10) {
-      return res.json({ winner: null });
+    // draw target 0–1000
+    const target = Math.floor(Math.random() * 1001);
+
+    // find closest
+    let best = null;
+    for (const g of guesses) {
+      const diff = Math.abs(g.guess - target);
+      if (!best || diff < best.diff) {
+        best = { ...g, diff };
+      }
     }
 
-    const lastIndex = addresses.length - 1;
-    const winner = {
-      address: addresses[lastIndex],
-      guess: guesses[lastIndex].toString(),
-    };
+    let winner = null, winningGuess = null;
+    if (best) {
+      winner = best.address;
+      winningGuess = best.guess;
+      balances[winner] = balances[winner].add(pool);
+    }
 
-    res.json({ winner });
-  } catch (err) {
-    console.error("Error fetching winner:", err);
-    res.status(500).json({ error: "Failed to fetch winner" });
-  }
-});
+    const poolEth = ethers.utils.formatEther(pool);
 
-app.listen(PORT, () => {
-  console.log(`✅ Backend running at http://localhost:${PORT}`);
-});
+    // bump round counter (we’ll actually clear state in /new-round)
+    round++;
+
+    res.json({ target, winner, guess: winningGuess, pool: poolEth, round });
+  });
+
+  // start next round: clear guesses + pool + closed flag + update eligible list
+  app.post("/new-round", (req, res) => {
+    // only those who guessed last time can play again
+    eligible = Array.from(new Set(guesses.map(g => g.address)));
+    // clear old state
+    guesses = [];
+    pool    = ethers.BigNumber.from(0);
+    closed  = false;
+    res.json({ ok: true, eligible });
+  });
+
+  // reset everything back to round 1 + all balances to 5 ETH
+  app.post("/reset", (req, res) => {
+    guesses   = [];
+    pool      = ethers.BigNumber.from(0);
+    closed    = false;
+    round     = 1;
+    eligible  = [...accounts];
+    for (const a of accounts) {
+      balances[a] = ethers.utils.parseEther("5.0");
+    }
+    res.json({ success: true });
+  });
+
+  // ─── start server ─────────────────────────────────────────────────────────────
+  app.listen(4000, () => {
+    console.log("🚀 server listening on http://localhost:4000");
+  });
+}
+
+main().catch(console.error);
